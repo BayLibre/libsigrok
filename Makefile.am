@@ -197,6 +197,12 @@ libsigrok_la_SOURCES += \
 	src/hardware/baylibre-acme/gpio.h \
 	src/hardware/baylibre-acme/gpio.c
 endif
+if HW_GENERIC_IIO
+libsigrok_la_SOURCES += \
+	src/hardware/generic-iio/protocol.h \
+	src/hardware/generic-iio/protocol.c \
+	src/hardware/generic-iio/api.c
+endif
 if HW_BEAGLELOGIC
 libsigrok_la_SOURCES += \
 	src/hardware/beaglelogic/beaglelogic.h \

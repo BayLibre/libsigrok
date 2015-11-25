@@ -96,6 +96,9 @@ SR_EXTRA_LIBS=
 SR_ARG_OPT_PKG([libserialport], [LIBSERIALPORT], [NEED_SERIAL],
 	[libserialport >= 0.1.1])
 
+SR_ARG_OPT_PKG([libiio], [LIBIIO],,
+	[libiio >= 0.5])
+
 SR_ARG_OPT_PKG([libftdi], [LIBFTDI],,
 	[libftdi1 >= 1.0], [libftdi >= 0.16])
 
@@ -218,6 +221,7 @@ SR_DRIVER([Appa 55II], [appa-55ii], [libserialport])
 SR_DRIVER([ASIX SIGMA/SIGMA2], [asix-sigma], [libftdi])
 SR_DRIVER([Atten PPS3xxx], [atten-pps3xxx], [libserialport])
 SR_DRIVER([BayLibre ACME], [baylibre-acme], [sys_timerfd_h])
+SR_DRIVER([Generic IIO], [generic-iio], [libiio])
 SR_DRIVER([BeagleLogic], [beaglelogic], [sys_mman_h sys_ioctl_h])
 SR_DRIVER([Brymen BM86x], [brymen-bm86x], [libusb])
 SR_DRIVER([Brymen DMM], [brymen-dmm], [libserialport])
