@@ -172,7 +172,9 @@ SR_API int sr_analog_to_float(const struct sr_datafeed_analog *analog,
 		float *outbuf)
 {
 	float offset;
+	float scale;
 	unsigned int b, i, count;
+	uint8_t unitsize;
 	gboolean bigendian;
 
 	if (!analog || !(analog->data) || !(analog->meaning)
@@ -180,40 +182,104 @@ SR_API int sr_analog_to_float(const struct sr_datafeed_analog *analog,
 		return SR_ERR_ARG;
 
 	count = analog->num_samples * g_slist_length(analog->meaning->channels);
+	unitsize = analog->encoding->unitsize;
+	scale = (float)analog->encoding->scale.p / (float)analog->encoding->scale.q;
+	offset = (float)analog->encoding->offset.p / (float)analog->encoding->offset.q;
 
 #ifdef WORDS_BIGENDIAN
 	bigendian = TRUE;
 #else
 	bigendian = FALSE;
 #endif
-	if (!analog->encoding->is_float) {
-		/* TODO */
-		sr_err("Only floating-point encoding supported so far.");
-		return SR_ERR;
-	}
 
-	if (analog->encoding->unitsize == sizeof(float)
-			&& analog->encoding->is_bigendian == bigendian
-			&& analog->encoding->scale.p == 1
-			&& analog->encoding->scale.q == 1
-			&& analog->encoding->offset.p / (float)analog->encoding->offset.q == 0) {
-		/* The data is already in the right format. */
-		memcpy(outbuf, analog->data, count * sizeof(float));
-	} else {
-		for (i = 0; i < count; i += analog->encoding->unitsize) {
-			for (b = 0; b < analog->encoding->unitsize; b++) {
-				if (analog->encoding->is_bigendian == bigendian)
-					((uint8_t *)outbuf)[i + b] =
-						((uint8_t *)analog->data)[i * analog->encoding->unitsize + b];
-				else
-					((uint8_t *)outbuf)[i + (analog->encoding->unitsize - b)] =
-						((uint8_t *)analog->data)[i * analog->encoding->unitsize + b];
+	if (!analog->encoding->is_float) {
+		if (analog->encoding->is_bigendian == bigendian) {
+			switch (unitsize) {
+			case 1:
+				if (analog->encoding->is_signed) {
+					for (i = 0; i < count; i++) {
+						outbuf[i] = (float)((int8_t *)analog->data)[i];
+						outbuf[i] = outbuf[i] * scale + offset;
+					}
+				} else {
+					for (i = 0; i < count; i++) {
+						outbuf[i] = (float)((uint8_t *)analog->data)[i];
+						outbuf[i] = outbuf[i] * scale + offset;
+					}
+				}
+				break;
+			case 2:
+				if (analog->encoding->is_signed) {
+					for (i = 0; i < count; i++) {
+						outbuf[i] = (float)((int16_t *)analog->data)[i];
+						outbuf[i] = outbuf[i] * scale + offset;
+					}
+				} else {
+					for (i = 0; i < count; i++) {
+						outbuf[i] = (float)((uint16_t *)analog->data)[i];
+						outbuf[i] = outbuf[i] * scale + offset;
+					}
+				}
+				break;
+			case 4:
+				if (analog->encoding->is_signed) {
+					for (i = 0; i < count; i++) {
+						outbuf[i] = (float)((int32_t *)analog->data)[i];
+						outbuf[i] = outbuf[i] * scale + offset;
+					}
+				} else {
+					for (i = 0; i < count; i++) {
+						outbuf[i] = (float)((uint32_t *)analog->data)[i];
+						outbuf[i] = outbuf[i] * scale + offset;
+					}
+				}
+				break;
+			case 8:
+				if (analog->encoding->is_signed) {
+					for (i = 0; i < count; i++) {
+						outbuf[i] = (float)((int64_t *)analog->data)[i];
+						outbuf[i] = outbuf[i] * scale + offset;
+					}
+				} else {
+					for (i = 0; i < count; i++) {
+						outbuf[i] = (float)((uint64_t *)analog->data)[i];
+						outbuf[i] = outbuf[i] * scale + offset;
+					}
+				}
+				break;
+			default:
+				sr_err("%d-byte wide data not supported", unitsize);
+				return SR_ERR;
 			}
-			if (analog->encoding->scale.p != 1
-					|| analog->encoding->scale.q != 1)
-				outbuf[i] = (outbuf[i] * analog->encoding->scale.p) / analog->encoding->scale.q;
-			offset = ((float)analog->encoding->offset.p / (float)analog->encoding->offset.q);
-			outbuf[i] += offset;
+		} else {
+			/* TODO */
+			sr_err("Data doesn't match system endianness");
+			return SR_ERR;
+		}
+	} else {
+		if (unitsize == sizeof(float)
+				&& analog->encoding->is_bigendian == bigendian
+				&& analog->encoding->scale.p == 1
+				&& analog->encoding->scale.q == 1
+				&& analog->encoding->offset.p / (float)analog->encoding->offset.q == 0) {
+			/* The data is already in the right format. */
+			memcpy(outbuf, analog->data, count * sizeof(float));
+		} else {
+			for (i = 0; i < count; i += unitsize) {
+				for (b = 0; b < unitsize; b++) {
+					if (analog->encoding->is_bigendian == bigendian)
+						((uint8_t *)outbuf)[i + b] =
+							((uint8_t *)analog->data)[i * unitsize + b];
+					else
+						((uint8_t *)outbuf)[i + (unitsize - b)] =
+							((uint8_t *)analog->data)[i * unitsize + b];
+				}
+				if (analog->encoding->scale.p != 1
+						|| analog->encoding->scale.q != 1) {
+					outbuf[i] *= scale;
+				}
+				outbuf[i] += offset;
+			}
 		}
 	}
 
