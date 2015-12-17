@@ -30,24 +30,27 @@
 
 #define SAMPLES_PER_READ	256
 
-/** Private, per-device-instance driver context. */
-struct device_priv {
+/** Private, per channel group context. */
+struct channel_group_priv {
 	uint64_t limit_samples;
 	uint64_t limit_msec;
 
-	uint32_t num_channels;
 	uint64_t samples_read;
+	/* FIXME not updated */
 	uint64_t samples_missed;
 	int64_t start_time;
 	int64_t last_sample_fin;
 
 	struct iio_device *iio_dev;
 	struct iio_buffer *iio_buf;
+
+	struct sr_dev_inst *sdi;
 };
 
-SR_PRIV struct sr_dev_inst *gen_iio_register_dev(struct sr_dev_driver *sdi,
-						 struct iio_device *iiodev);
+SR_PRIV void gen_iio_channel_group_register(struct sr_dev_inst *sdi,
+					    struct iio_device *iiodev);
 
 SR_PRIV int gen_iio_receive_data(int fd, int revents, void *cb_data);
+SR_PRIV int gen_iio_receive_data_all(int fd, int revents, void *cb_data);
 
 #endif

@@ -30,13 +30,14 @@
 
 /** Private, per-channel data. */
 struct channel_priv {
+	struct sr_channel_group *group;
 	struct iio_channel *iio_chan;
 	/* Data encoding is static in IIO channels */
 	struct sr_analog_encoding *encoding;
 	struct sr_analog_meaning *meaning;
 };
 
-static int chan_priv_init(struct sr_channel *chan)
+static int chan_priv_init(struct sr_channel *chan, struct sr_channel_group *chg)
 {
 	struct channel_priv *chanp = chan->priv;
 	struct iio_channel *iiochan = chanp->iio_chan;
@@ -212,15 +213,16 @@ static int chan_priv_init(struct sr_channel *chan)
 	meaning->channels = g_slist_append(meaning->channels, chan);
 	chanp->meaning = meaning;
 	chanp->encoding = encoding;
+	chanp->group = chg;
 
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_inst *gen_iio_register_dev(struct sr_dev_driver *di,
-						 struct iio_device *iiodev)
+SR_PRIV void gen_iio_channel_group_register(struct sr_dev_inst *sdi,
+					    struct iio_device *iiodev)
 {
-	struct device_priv *devp;
-	struct sr_dev_inst *sdi;
+	struct sr_channel_group *chg;
+	struct channel_group_priv *chgp;
 	struct sr_channel *chan;
 	struct iio_channel *iiochan;
 	struct channel_priv *chanp;
@@ -230,22 +232,21 @@ SR_PRIV struct sr_dev_inst *gen_iio_register_dev(struct sr_dev_driver *di,
 	const char *devname;
 
 	if (!iiodev)
-		return NULL;
+		return;
 
 	devname = iio_device_get_name(iiodev);
 	nb_chan = iio_device_get_channels_count(iiodev);
 	sr_dbg("IIO device %s has %u channel(s)", devname, nb_chan);
 
 	/* FIXME free it somewhere */
-	devp = g_malloc0(sizeof(struct device_priv));
-	devp->iio_dev = iiodev;
+	chgp = g_malloc0(sizeof(struct channel_group_priv));
+	chgp->iio_dev = iiodev;
+	chgp->sdi = sdi;
 
-	sdi = g_malloc0(sizeof(struct sr_dev_inst));
-	sdi->status = SR_ST_INACTIVE;
-	sdi->vendor = g_strdup("Generic IIO");
-	sdi->model = g_strdup(iio_device_get_name(iiodev));
-	sdi->driver = di;
-	sdi->priv = devp;
+	/* FIXME free it somewhere */
+	chg = g_malloc0(sizeof(struct sr_channel_group));
+	chg->name = g_strdup(devname);
+	chg->priv = chgp;
 
 	for (i = 0; i < nb_chan; i++) {
 		iiochan = iio_device_get_channel(iiodev, i);
@@ -253,10 +254,6 @@ SR_PRIV struct sr_dev_inst *gen_iio_register_dev(struct sr_dev_driver *di,
 		sr_dbg("Channel #%d id: %s name: %s dir: %s",
 		       i, id, iio_channel_get_name(iiochan),
 		       iio_channel_is_output(iiochan) ? "OUT" : "IN");
-
-		/*
-		 * FIXME Maybe register each IIO device as a channel group?
-		 */
 
 		/* Register only input channels. */
 		if (!iio_channel_is_scan_element(iiochan)
@@ -271,36 +268,38 @@ SR_PRIV struct sr_dev_inst *gen_iio_register_dev(struct sr_dev_driver *di,
 		chanp->iio_chan = iiochan;
 		chan->priv = chanp;
 
-		if (chan_priv_init(chan) != SR_OK) {
+		if (chan_priv_init(chan, chg) != SR_OK) {
 			sdi->channels = g_slist_remove(sdi->channels, chan);
 			g_free(chan);
 			g_free(chanp);
 			continue;
 		}
 
+		chg->channels = g_slist_append(chg->channels, chan);
 		/* Enable channel by default */
 		iio_channel_enable(iiochan);
 	}
 
-	if (g_slist_length(sdi->channels) == 0) {
+	if (chg->channels == NULL) {
 		sr_dbg("No input channels found, ignoring IIO device %s.",
 		       devname);
 		goto no_channel;
 	}
 
-	return sdi;
+	sdi->channel_groups = g_slist_append(sdi->channel_groups, chg);
+
+	return;
 
 no_channel:
-	g_free(devp);
-	g_free(sdi);
-	return NULL;
+	g_free(chgp);
+	g_free(chg);
 }
 
 static size_t chan_read(struct sr_channel *chan, void *buf, size_t num_samples)
 {
-	struct device_priv *devp = chan->sdi->priv;
-	struct iio_buffer *iiobuf = devp->iio_buf;
 	struct channel_priv *chanp = chan->priv;
+	struct channel_group_priv *chgp = chanp->group->priv;
+	struct iio_buffer *iiobuf = chgp->iio_buf;
 	struct sr_analog_encoding *encoding = chanp->encoding;
 	struct iio_channel *iiochan = chanp->iio_chan;
 
@@ -320,7 +319,6 @@ static size_t chan_read(struct sr_channel *chan, void *buf, size_t num_samples)
 
 SR_PRIV int gen_iio_receive_data(int fd, int revents, void *cb_data)
 {
-	uint32_t cur_time, elapsed_time;
 	struct sr_datafeed_packet packet, framep;
 	struct sr_datafeed_analog analog;
 	struct sr_analog_meaning meaning;
@@ -328,8 +326,9 @@ SR_PRIV int gen_iio_receive_data(int fd, int revents, void *cb_data)
 	struct sr_analog_spec spec;
 	struct sr_dev_inst *sdi;
 	struct sr_channel *ch;
-	struct device_priv *devp;
 	struct channel_priv *chanp;
+	struct sr_channel_group *chg;
+	struct channel_group_priv *chgp;
 	struct iio_buffer *iiobuf;
 	struct iio_device *iiodev;
 	GSList *chl;
@@ -341,26 +340,26 @@ SR_PRIV int gen_iio_receive_data(int fd, int revents, void *cb_data)
 	(void)fd;
 	(void)revents;
 
-	sdi = cb_data;
-	if (!sdi)
+	chg = cb_data;
+	if (!chg)
 		return TRUE;
 
-	devp = sdi->priv;
-	if (!devp)
+	chgp = chg->priv;
+	if (!chgp)
 		return TRUE;
 
-	iiobuf = devp->iio_buf;
+	iiobuf = chgp->iio_buf;
 	if (!iiobuf)
 		return TRUE;
 
-	iiodev = devp->iio_dev;
+	iiodev = chgp->iio_dev;
+	sdi = chgp->sdi;
 
 	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
 	int digits = 3; /* FIXME what does it stand for? */
 	sr_analog_init(&analog, &encoding, &meaning, &spec, digits);
 
-	/* NOTE Only for device with input channels... */
 	ret = iio_buffer_refill(iiobuf);
 	if (ret < 0) {
 		sr_err("Unable to refill IIO buffer: %s", strerror(-ret));
@@ -369,8 +368,8 @@ SR_PRIV int gen_iio_receive_data(int fd, int revents, void *cb_data)
 	sr_dbg("%ld bytes read from buffer", ret);
 
 	tot_samples = ret / iio_device_get_sample_size(iiodev);
-	if (devp->limit_samples > 0) {
-		samples_remaining = devp->limit_samples - devp->samples_read;
+	if (chgp->limit_samples > 0) {
+		samples_remaining = chgp->limit_samples - chgp->samples_read;
 		samples_to_read = MIN(tot_samples, samples_remaining);
 	} else {
 		samples_to_read = tot_samples;
@@ -382,7 +381,7 @@ SR_PRIV int gen_iio_receive_data(int fd, int revents, void *cb_data)
 	/* FIXME allocate in dev_acquisition_start() */
 	int8_t *buf = g_malloc0_n(samples_to_read, sizeof(int64_t));
 
-	for (chl = sdi->channels; chl; chl = chl->next) {
+	for (chl = chg->channels; chl; chl = chl->next) {
 		ch = chl->data;
 		chanp = ch->priv;
 
@@ -395,29 +394,60 @@ SR_PRIV int gen_iio_receive_data(int fd, int revents, void *cb_data)
 	}
 
 	framep.type = SR_DF_FRAME_END;
-	sr_session_send(cb_data, &framep);
+	sr_session_send(sdi, &framep);
 
-	devp->samples_read += analog.num_samples;
-	if (devp->limit_samples > 0 &&
-	    devp->samples_read >= devp->limit_samples) {
+	chgp->samples_read += analog.num_samples;
+#if 0
+	if (chgp->limit_samples > 0 &&
+	    chgp->samples_read >= chgp->limit_samples) {
 		sr_info("Requested number of samples reached.");
 		sdi->driver->dev_acquisition_stop(sdi, cb_data);
-		devp->last_sample_fin = g_get_monotonic_time();
+		chgp->last_sample_fin = g_get_monotonic_time();
 		return TRUE;
-	} else if (devp->limit_msec > 0) {
+	} else if (chgp->limit_msec > 0) {
 		cur_time = g_get_monotonic_time();
-		elapsed_time = cur_time - devp->start_time;
+		elapsed_time = cur_time - chgp->start_time;
 
-		if (elapsed_time >= devp->limit_msec) {
+		if (elapsed_time >= chgp->limit_msec) {
 			sr_info("Sampling time limit reached.");
 			sdi->driver->dev_acquisition_stop(sdi, cb_data);
-			devp->last_sample_fin = g_get_monotonic_time();
+			chgp->last_sample_fin = g_get_monotonic_time();
 			return TRUE;
 		}
 	}
-
-	devp->last_sample_fin = g_get_monotonic_time();
+#endif
+	chgp->last_sample_fin = g_get_monotonic_time();
 	g_free(buf);
+
+	return TRUE;
+}
+
+SR_PRIV int gen_iio_receive_data_all(int fd, int revents, void *cb_data)
+{
+	struct sr_dev_inst *sdi;
+	struct sr_channel_group *chg;
+	struct channel_group_priv *chgp;
+	GSList *chgl;
+	unsigned int chg_remaining;
+
+	sdi = cb_data;
+
+	chg_remaining = g_slist_length(sdi->channel_groups);
+
+	/*
+	 * For network context. As all IIO buffers share the same socket fd,
+	 * we can't tell which one has new data, so try them all in turn.
+	 */
+	for (chgl = sdi->channel_groups; chgl && chg_remaining; chgl = chgl->next) {
+		chg = chgl->data;
+		chgp = chg->priv;
+		gen_iio_receive_data(fd, revents, chg);
+		if (chgp->samples_read >= chgp->limit_samples)
+			chg_remaining--;
+	}
+
+	if (!chg_remaining)
+		sdi->driver->dev_acquisition_stop(sdi, NULL);
 
 	return TRUE;
 }
