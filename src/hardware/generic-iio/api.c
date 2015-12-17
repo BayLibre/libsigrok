@@ -56,12 +56,12 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	GSList *devices;
 	GSList *l;
 	const char *conn = NULL;
+	char buff[50];
 	unsigned int nb_devices;
 	unsigned int major;
 	unsigned int minor;
 	unsigned int i;
 	char git_tag[8];
-	gboolean use_network = FALSE;
 
 	drvc = di->context;
 	devices = NULL;
@@ -74,32 +74,46 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 		if (src->key == SR_CONF_CONN) {
 			conn = g_variant_get_string(src->data, NULL);
-			use_network = TRUE;
 		}
 	}
 
-	if (use_network) {
-		iio_ctx = iio_create_network_context(conn);
-	} else {
-		iio_ctx = iio_create_default_context();
-	}
+	iio_ctx = iio_create_default_context();
 
 	if (!iio_ctx) {
 		sr_err("Unable to create IIO context");
 		return NULL;
 	}
 
-	nb_devices = iio_context_get_devices_count(iio_ctx);
-	sr_dbg("IIO context has %u device(s)", nb_devices);
+	if (conn) {
+		/*
+		 * Device id is expected without the leading "iio:", as ":" is
+		 * apparently an option separator in (at least) sigrok-cli.
+		 */
+		if (sscanf(conn, "device%u", &i) == 1)
+			iiodev = iio_context_get_device(iio_ctx, i);
+		else
+			iiodev = iio_context_find_device(iio_ctx, conn);
 
-	/* FIXME sigrk-cli doesn't expect several instances of a device */
-	/* Create a sr_dev_inst per IIO device. */
-	for (i = 0; i < nb_devices; i++) {
-		iiodev = iio_context_get_device(iio_ctx, i);
+		if (!iiodev)
+			return NULL;
+
 		sdi = gen_iio_register_dev(di, iiodev);
 		if (sdi) {
 			devices = g_slist_append(devices, sdi);
 			drvc->instances = g_slist_append(drvc->instances, sdi);
+		}
+	} else {
+		nb_devices = iio_context_get_devices_count(iio_ctx);
+		sr_dbg("IIO context has %u device(s)", nb_devices);
+
+		/* Create a sr_dev_inst per IIO device. */
+		for (i = 0; i < nb_devices; i++) {
+			iiodev = iio_context_get_device(iio_ctx, i);
+			sdi = gen_iio_register_dev(di, iiodev);
+			if (sdi) {
+				devices = g_slist_append(devices, sdi);
+				drvc->instances = g_slist_append(drvc->instances, sdi);
+			}
 		}
 	}
 
